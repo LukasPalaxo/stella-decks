@@ -13,13 +13,12 @@
  *   exports/{deck}/{deck}.pdf                  (1280x720pt pages, image-based)
  */
 
-import puppeteer from 'puppeteer';
+import puppeteer from 'puppeteer-core';
 import { readFileSync, mkdirSync, readdirSync, existsSync, unlinkSync } from 'fs';
 import { readFile, writeFile } from 'fs/promises';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createServer } from 'http';
-import { lookup } from 'mime-types';
 import { PDFDocument } from 'pdf-lib';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -42,9 +41,41 @@ const slides = manifest.slides;
 const pngDir = resolve(root, `exports/${deckSlug}/slides`);
 const pdfPath = resolve(root, `exports/${deckSlug}/${deckSlug}.pdf`);
 
-// ── Auto-detect Chrome ──
+const MIME_BY_EXT = {
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+  '.otf': 'font/otf',
+};
+
+function mimeForPath(filePath) {
+  const dot = filePath.lastIndexOf('.');
+  if (dot === -1) return 'application/octet-stream';
+  const ext = filePath.slice(dot).toLowerCase();
+  return MIME_BY_EXT[ext] || 'application/octet-stream';
+}
+
 function findChrome() {
+  if (process.env.PUPPETEER_EXECUTABLE_PATH && existsSync(process.env.PUPPETEER_EXECUTABLE_PATH)) {
+    return process.env.PUPPETEER_EXECUTABLE_PATH;
+  }
+
   const candidates = [
+    // Windows
+    'C:/Program Files/Google/Chrome/Application/chrome.exe',
+    'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+    'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
+    'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
     // macOS
     '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
     '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
@@ -54,24 +85,26 @@ function findChrome() {
     '/usr/bin/google-chrome-stable',
     '/usr/bin/chromium-browser',
     '/usr/bin/chromium',
-    // Windows (WSL)
+    // WSL
     '/mnt/c/Program Files/Google/Chrome/Application/chrome.exe',
     '/mnt/c/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+    '/mnt/c/Program Files/Microsoft/Edge/Application/msedge.exe',
+    '/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
   ];
+
   for (const p of candidates) {
     if (existsSync(p)) return p;
   }
-  return undefined; // Let Puppeteer use its bundled Chromium
+  return undefined;
 }
 
-// ── Static file server ──
 function startServer(port) {
   return new Promise((res) => {
     const server = createServer(async (req, resp) => {
       try {
         const filePath = resolve(root, decodeURIComponent(req.url).slice(1));
         const content = await readFile(filePath);
-        const mime = lookup(filePath) || 'application/octet-stream';
+        const mime = mimeForPath(filePath);
         resp.writeHead(200, { 'Content-Type': mime });
         resp.end(content);
       } catch {
@@ -83,9 +116,7 @@ function startServer(port) {
   });
 }
 
-// ── Export PNGs ──
 async function exportPngs() {
-  // Clear old PNGs before exporting
   if (existsSync(pngDir)) {
     for (const f of readdirSync(pngDir)) {
       if (f.endsWith('.png')) {
@@ -99,9 +130,16 @@ async function exportPngs() {
   const server = await startServer(port);
 
   const chromePath = findChrome();
+  if (!chromePath) {
+    server.close();
+    throw new Error(
+      'No Chrome/Chromium executable found. Install Chrome or set PUPPETEER_EXECUTABLE_PATH.'
+    );
+  }
+
   const browser = await puppeteer.launch({
     headless: true,
-    ...(chromePath ? { executablePath: chromePath } : {}),
+    executablePath: chromePath,
     timeout: 60000,
     protocolTimeout: 60000,
   });
@@ -126,7 +164,6 @@ async function exportPngs() {
 
     await page.goto(url, { waitUntil: 'networkidle0', timeout: 30000 });
 
-    // Preload all font weights
     await page.evaluate(async () => {
       const families = ['Instrument Serif', 'DM Sans'];
       const weights = ['400', '500', '600', '700'];
@@ -141,7 +178,6 @@ async function exportPngs() {
       await document.fonts.ready;
     });
 
-    // Inject correct slide number from manifest order
     await page.evaluate((slideNum) => {
       const el = document.querySelector('.slide-num');
       if (el) el.textContent = slideNum;
@@ -163,7 +199,6 @@ async function exportPngs() {
   console.log(`\n  ${slides.length} PNGs exported to ${pngDir}\n`);
 }
 
-// ── Compose PDF from PNGs ──
 async function composePdf() {
   const pdf = await PDFDocument.create();
 
@@ -187,14 +222,15 @@ async function composePdf() {
 
   pdf.setTitle(manifest.title);
   pdf.setCreator('Stella Decks');
-  pdf.setProducer('puppeteer + pdf-lib');
+  pdf.setProducer('puppeteer-core + pdf-lib');
 
   const pdfBytes = await pdf.save();
   await writeFile(pdfPath, pdfBytes);
-  console.log(`  PDF saved: ${pdfPath} (${pngFiles.length} pages, ${(pdfBytes.length / 1024 / 1024).toFixed(1)}MB)\n`);
+  console.log(
+    `  PDF saved: ${pdfPath} (${pngFiles.length} pages, ${(pdfBytes.length / 1024 / 1024).toFixed(1)}MB)\n`
+  );
 }
 
-// ── Main ──
 async function main() {
   console.log(`\nExporting "${manifest.title}" (${slides.length} slides)\n`);
 

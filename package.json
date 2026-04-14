@@ -5,19 +5,16 @@
   "private": false,
   "type": "module",
   "scripts": {
-    "start": "serve .",
-    "preview": "serve .",
+    "start": "node scripts/serve.mjs",
+    "preview": "node scripts/serve.mjs",
     "export": "node scripts/export-deck.mjs",
     "export:md": "node scripts/export-deck-md.mjs",
     "generate": "node scripts/generate-image.mjs"
   },
   "dependencies": {
-    "dotenv": "^16.4.7",
-    "mime-types": "^2.1.35",
     "openai": "^4.85.0",
     "pdf-lib": "^1.17.1",
-    "puppeteer": "^24.2.1",
-    "serve": "^14.2.4"
+    "puppeteer-core": "^24.40.0"
   },
   "license": "MIT"
 }
